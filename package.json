@@ -1,0 +1,14 @@
+{
+  "name": "refactor",
+  "version": "0.1.0",
+  "description": "A reverse-engineering skill for AI coding agents, with small read-only helper scripts.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}
