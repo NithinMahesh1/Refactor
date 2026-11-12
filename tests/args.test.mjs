@@ -72,3 +72,24 @@ test('No arguments', () => {
   const res = buildWindowsBatCommand('run.bat', []);
   assert.deepEqual(res, ['/d', '/s', '/c', '""run.bat""']);
 });
+
+test('A name of an Object method is an unknown option', () => {
+  for (const name of ['constructor', 'toString', '__proto__']) {
+    assert.throws(() => parseArgs(['--' + name], spec),
+      { code: 'usage', message: 'unknown option --' + name });
+  }
+});
+
+test('A value that ends with a backslash is refused', () => {
+  assert.throws(() => buildWindowsBatCommand('C:\\tools\\', []), { code: 'unsafe_path' });
+  assert.throws(() => buildWindowsBatCommand('run.bat', ['D:\\work dir\\', 'second']),
+    { code: 'unsafe_path' });
+  assert.throws(() => buildWindowsBatCommand('run.bat', ['D:\\']), { code: 'unsafe_path' });
+  assert.deepEqual(buildWindowsBatCommand('run.bat', ['C:\\dir\\file.bin']),
+    ['/d', '/s', '/c', '""run.bat" "C:\\dir\\file.bin""']);
+});
+
+test('The unsafe-path message tells the user what to do', () => {
+  assert.throws(() => buildWindowsBatCommand('run.bat', ['a&b']),
+    (e) => e.message.includes('copy the file to a path without') && !e.message.includes('a&b'));
+});

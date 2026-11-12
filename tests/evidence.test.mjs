@@ -50,9 +50,9 @@ test('makeEvidence id consistency and format', () => {
 test('makeEvidence id changes when fields change', () => {
   const baseId = makeEvidence(validInput()).id;
 
-  assert.notStrictEqual(withSubject({ name: 'other.bin' }).id, baseId);
-  assert.notStrictEqual(withSubject({ sha256: 'b'.repeat(64) }).id, baseId);
-  assert.notStrictEqual(withSubject({ size_bytes: 11 }).id, baseId);
+  assert.notStrictEqual(makeEvidence(withSubject({ name: 'other.bin' })).id, baseId);
+  assert.notStrictEqual(makeEvidence(withSubject({ sha256: 'b'.repeat(64) })).id, baseId);
+  assert.notStrictEqual(makeEvidence(withSubject({ size_bytes: 11 })).id, baseId);
   assert.notStrictEqual(makeEvidence({ ...validInput(), operation: 'other' }).id, baseId);
   assert.notStrictEqual(makeEvidence({ ...validInput(), parameters: { x: 2 } }).id, baseId);
   assert.notStrictEqual(makeEvidence({ ...validInput(), confidence: 'derived' }).id, baseId);
@@ -152,4 +152,25 @@ test('subject keeps only its known fields', () => {
   input.subject.extra = 'x';
   const record = makeEvidence(input);
   assert.deepEqual(Object.keys(record.subject), ['name', 'sha256', 'size_bytes']);
+});
+
+test('canonicalJson refuses objects that are not plain', () => {
+  assert.throws(() => canonicalJson(new Date(0)), TypeError);
+  assert.throws(() => canonicalJson(Buffer.from('a')), TypeError);
+  assert.throws(() => canonicalJson({ a: new Map() }), TypeError);
+  assert.equal(canonicalJson(Object.assign(Object.create(null), { b: 1, a: 2 })), '{"a":2,"b":1}');
+});
+
+test('makeEvidence refuses values that are not plain data', () => {
+  assert.throws(() => makeEvidence({ ...validInput(), result: new Date(0) }),
+    (e) => e instanceof TypeError && e.message.startsWith('result'));
+  assert.throws(() => makeEvidence({ ...validInput(), coverage: [] }),
+    (e) => e instanceof TypeError && e.message.startsWith('coverage'));
+});
+
+test('tool.engine keeps only name and version', () => {
+  const engine = { name: 'ghidra', version: '11.0', install_dir: 'X:\\apps\\ghidra' };
+  const record = makeEvidence({ ...validInput(), tool: { ...validInput().tool, engine } });
+  assert.deepEqual(Object.keys(record.tool.engine), ['name', 'version']);
+  assert.strictEqual(record.tool.engine.install_dir, undefined);
 });

@@ -117,7 +117,7 @@ export function identifyBytes(head, fileSize) {
       if (pe !== undefined && pe + 4 > fileSize) {
         return { type: 'mz', details: {} };
       } else {
-        return { type: 'pe', details: { header: 'outside the bytes read' } };
+        return { type: 'mz', details: { pe_header: 'outside the bytes read' } };
       }
     }
     if (b[pe] !== 0x50 || b[pe + 1] !== 0x45 || b[pe + 2] !== 0x00 || b[pe + 3] !== 0x00) {

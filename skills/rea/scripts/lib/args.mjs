@@ -51,7 +51,7 @@ export function parseArgs(argv, spec) {
         name = rest;
       }
 
-      if (name in options) {
+      if (Object.hasOwn(options, name)) {
         throw codedError('usage', `option --${name} given twice`);
       }
 
@@ -92,28 +92,53 @@ const UNSAFE_BAT_CHARS = /["%^&|<>!\u0000-\u001f\u007f]/;
  * position of the bad argument but does not repeat its text.
  * Returns ['/d', '/s', '/c', '"' + ['"' + batPath + '"', ...args.map(a => '"' + a + '"')]
  * .join(' ') + '"'].
- * The caller runs: spawn('cmd.exe', result, { windowsVerbatimArguments: true }).
+ * Also refuses a value that ends with a backslash: the started program would read `\"` as a
+ * quote character and merge the next arguments into it (so a drive root such as `D:\` is
+ * refused too).
+ * The caller runs cmd.exe by its full path, never by its bare name:
+ * runProcess(windowsSystemProgram('cmd.exe'), result, { windowsVerbatimArguments: true })
+ * (both from run.mjs).
  * @param {string} batPath
  * @param {string[]} args
  * @returns {string[]}
  */
 export function buildWindowsBatCommand(batPath, args) {
-  if (typeof batPath !== 'string' || UNSAFE_BAT_CHARS.test(batPath)) {
-    throw codedError('unsafe_path', 'argument 0 holds a character that cmd.exe would interpret');
+  if (isUnsafeBatText(batPath)) {
+    throw unsafeBatError(0);
   }
 
   const formattedArgs = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (typeof arg !== 'string' || UNSAFE_BAT_CHARS.test(arg)) {
-      throw codedError('unsafe_path',
-        `argument ${i + 1} holds a character that cmd.exe would interpret`);
+    if (isUnsafeBatText(arg)) {
+      throw unsafeBatError(i + 1);
     }
     formattedArgs.push(arg);
   }
 
   const joined = ['"' + batPath + '"', ...formattedArgs.map((a) => '"' + a + '"')].join(' ');
   return ['/d', '/s', '/c', '"' + joined + '"'];
+}
+
+/**
+ * True when `text` is not a string, holds a character that cmd.exe interprets, or ends with
+ * a backslash.
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+function isUnsafeBatText(text) {
+  return typeof text !== 'string' || UNSAFE_BAT_CHARS.test(text) || text.endsWith('\\');
+}
+
+/**
+ * The error for an unsafe value at position `index`. It never repeats the value.
+ * @param {number} index
+ * @returns {Error}
+ */
+function unsafeBatError(index) {
+  return codedError('unsafe_path', `argument ${index} cannot be passed to the Windows launcher: `
+    + 'copy the file to a path without the characters " % ^ & | < > ! and without a '
+    + 'backslash at the end');
 }
 
 export { UNSAFE_BAT_CHARS };

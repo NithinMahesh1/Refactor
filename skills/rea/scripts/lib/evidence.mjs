@@ -26,10 +26,12 @@ export function codedError(code, message, details) {
 }
 
 /**
- * Returns JSON text with object keys sorted by code point at every level, arrays in their
+ * Returns JSON text with object keys sorted in UTF-16 code unit order (the order of the
+ * default Array.prototype.sort) at every level, arrays in their
  * order, and no white space.
  * Throws TypeError for `undefined`, functions, symbols, bigints and numbers that are not finite
  * (also when they are inside an object or an array).
+ * Also throws TypeError for an object whose prototype is not Object.prototype or null.
  * @param {unknown} value
  * @returns {string}
  */
@@ -54,6 +56,10 @@ export function canonicalJson(value) {
     return '[' + value.map((v) => canonicalJson(v)).join(',') + ']';
   }
   if (type === 'object') {
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      throw new TypeError('canonicalJson: only plain objects are allowed');
+    }
     const keys = Object.keys(value).sort();
     return '{' + keys.map((k) => {
       const keyStr = JSON.stringify(k);
@@ -94,7 +100,16 @@ export function makeEvidence({
   coverage = {},
   limits = [],
 } = {}) {
-  const isPlainObject = (obj) => typeof obj === 'object' && obj !== null && !Array.isArray(obj);
+  const isPlainObject = (obj) => {
+    if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
+      return false;
+    }
+    const proto = Object.getPrototypeOf(obj);
+    return proto === Object.prototype || proto === null;
+  };
+  if (!isPlainObject(coverage)) {
+    throw new TypeError('coverage: must be a plain object');
+  }
 
   const coverageDefault = {
     examined: undefined,
@@ -198,7 +213,9 @@ export function makeEvidence({
     tool: {
       name: finalTool.name,
       version: finalTool.version,
-      engine: structuredClone(finalTool.engine),
+      engine: finalTool.engine === null
+        ? null
+        : { name: finalTool.engine.name, version: finalTool.engine.version },
     },
     operation,
     parameters: structuredClone(parameters),

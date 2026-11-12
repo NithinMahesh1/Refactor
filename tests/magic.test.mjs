@@ -96,8 +96,8 @@ test('PE header outside the bytes read', () => {
   buf.set([0x4d, 0x5a], 0);
   buf.writeUInt32LE(0x2000, 0x3c);
   assert.deepEqual(identifyBytes(buf, 100000), {
-    type: 'pe',
-    details: { header: 'outside the bytes read' }
+    type: 'mz',
+    details: { pe_header: 'outside the bytes read' }
   });
 });
 
