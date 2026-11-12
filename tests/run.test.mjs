@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runProcess } from '../skills/rea/scripts/lib/run.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { runProcess, windowsSystemProgram } from '../skills/rea/scripts/lib/run.mjs';
 
 test('Exit code 0 and output', async () => {
   const script = 'process.stdout.write("hello"); process.stderr.write("warn")';
@@ -28,7 +31,7 @@ test('A sleeping child is stopped at the timeout', async () => {
   assert.ok(r.durationMs < 15000);
 });
 
-test('A child that starts its own child is stopped as a tree', async () => {
+test('A child that starts its own child is stopped as a tree', { timeout: 20000 }, async () => {
   const script = [
     'const { spawn } = require("node:child_process");',
     'spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "inherit" });',
@@ -37,7 +40,7 @@ test('A child that starts its own child is stopped as a tree', async () => {
   const r = await runProcess(process.execPath, ['-e', script], { timeoutMs: 500 });
   assert.strictEqual(r.timedOut, true);
   assert.ok(r.durationMs < 15000);
-}, { timeout: 20000 });
+});
 
 test('Output over the limit is cut and flagged', async () => {
   const script = 'process.stdout.write("x".repeat(5000))';
@@ -71,4 +74,66 @@ test('Arguments are passed as an array without a shell', async () => {
   ]);
   const args = JSON.parse(r.stdout);
   assert.deepStrictEqual(args, ['a b', '&', '%PATH%', '$HOME']);
+});
+
+test('windowsSystemProgram builds the path', async () => {
+  assert.strictEqual(
+    windowsSystemProgram('cmd.exe', { SystemRoot: 'D:\\Win' }),
+    'D:\\Win\\System32\\cmd.exe'
+  );
+  assert.strictEqual(
+    windowsSystemProgram('cmd.exe', { windir: 'E:\\W' }),
+    'E:\\W\\System32\\cmd.exe'
+  );
+  assert.strictEqual(
+    windowsSystemProgram('cmd.exe', {}),
+    'C:\\Windows\\System32\\cmd.exe'
+  );
+});
+
+test('Bad options reject with code usage', async () => {
+  await assert.rejects(
+    runProcess(process.execPath, ['-e', ''], { timeoutMs: 3_000_000_000 }),
+    { code: 'usage' }
+  );
+  await assert.rejects(
+    runProcess(process.execPath, ['-e', ''], { timeoutMs: 0 }),
+    { code: 'usage' }
+  );
+  await assert.rejects(
+    runProcess(process.execPath, ['-e', ''], { timeoutMs: 1.5 }),
+    { code: 'usage' }
+  );
+  await assert.rejects(
+    runProcess(process.execPath, ['-e', ''], { maxOutputBytes: -1 }),
+    { code: 'usage' }
+  );
+  await assert.rejects(
+    runProcess(process.execPath, ['-e', ''], { maxOutputBytes: 1.5 }),
+    { code: 'usage' }
+  );
+});
+
+test('The spawn_failed message holds no path', async () => {
+  const missing = path.join(os.tmpdir(), 'refactor-missing-folder', 'nope.exe');
+  await assert.rejects(runProcess(missing, []), (e) =>
+    e.code === 'spawn_failed' && !e.message.includes('refactor-missing-folder')
+  );
+});
+
+test('A program in the current folder is not started by its bare name on Windows', {
+  skip: process.platform !== 'win32',
+  timeout: 30000,
+}, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
+  try {
+    fs.copyFileSync(process.execPath, path.join(dir, 'refactor-probe.exe'));
+    delete process.env.NoDefaultCurrentDirectoryInExePath;
+    await assert.rejects(
+      runProcess('refactor-probe', ['-e', ''], { cwd: dir }),
+      { code: 'spawn_failed' }
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
