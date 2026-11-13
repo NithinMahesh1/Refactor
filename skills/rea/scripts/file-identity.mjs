@@ -21,7 +21,8 @@ Exit codes: 0 success, 2 error.`;
 
 /**
  * Reads the file once. The same bytes give the digest, the size and the first bytes, so the
- * three values always describe the same content.
+ * three values always describe the same content. The promise settles only after the file is
+ * closed again, so that the caller can remove the file at once.
  * Throws codedError('unreadable', ...) when the file cannot be read.
  * @param {string} absPath
  * @returns {Promise<{sha256: string, size: number, head: Buffer}>}
@@ -32,6 +33,7 @@ function readOnce(absPath) {
     const headParts = [];
     let headLength = 0;
     let size = 0;
+    let result = null;
     const stream = createReadStream(absPath);
     stream.on('error', () => {
       reject(codedError('unreadable', 'the file cannot be read'));
@@ -46,7 +48,14 @@ function readOnce(absPath) {
       }
     });
     stream.on('end', () => {
-      resolve({ sha256: hash.digest('hex'), size, head: Buffer.concat(headParts) });
+      result = { sha256: hash.digest('hex'), size, head: Buffer.concat(headParts) };
+    });
+    stream.on('close', () => {
+      if (result === null) {
+        reject(codedError('unreadable', 'the file cannot be read'));
+      } else {
+        resolve(result);
+      }
     });
   });
 }
@@ -64,8 +73,15 @@ export async function main(argv) {
     ({ positionals, options } = parseArgs(argv,
       { flags: ['show-path', 'pretty', 'help'], values: [] }));
   } catch (err) {
-    // The options were not parsed, so the error record is printed on one line.
-    return { exitCode: 2, output: JSON.stringify(makeError('usage', err.message)) };
+    // The options were not parsed: look for --pretty in the arguments as typed, before a
+    // lone -- (which ends the options).
+    const end = argv.indexOf('--');
+    const pretty = (end === -1 ? argv : argv.slice(0, end)).includes('--pretty');
+    const out = makeError('usage', err.message);
+    return {
+      exitCode: 2,
+      output: pretty ? JSON.stringify(out, null, 2) : JSON.stringify(out),
+    };
   }
 
   if (options.help) {
@@ -84,10 +100,12 @@ export async function main(argv) {
     }
     const { type, details } = identifyBytes(head, size);
 
-    const subject = { name: target.name, sha256, size_bytes: size };
-    if (options['show-path']) {
-      subject.path = target.absPath;
-    }
+    const subject = {
+      name: target.name,
+      sha256,
+      size_bytes: size,
+      ...(options['show-path'] ? { path: target.absPath } : {}),
+    };
 
     const record = makeEvidence({
       subject,
@@ -112,7 +130,7 @@ export async function main(argv) {
   } catch (err) {
     let code = err.code;
     let msg = err.message;
-    if (!['usage', 'not_found', 'is_directory', 'unreadable'].includes(code)) {
+    if (!['usage', 'not_found', 'is_directory', 'unreadable', 'unsafe_path'].includes(code)) {
       code = 'unreadable';
       msg = 'the file cannot be read';
     }
@@ -138,6 +156,10 @@ function isMainModule() {
 
 if (isMainModule()) {
   const { exitCode, output } = await main(process.argv.slice(2));
+  // A reader that closes stdout early (for example `| head -c 0`) makes the write fail. That
+  // is not an error of this script: print nothing on stderr (no stack trace with the path of
+  // this script) and keep the exit code.
+  process.stdout.on('error', () => {});
   process.stdout.write(output + '\n');
   process.exitCode = exitCode;
 }

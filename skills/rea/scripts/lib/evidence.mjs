@@ -5,6 +5,8 @@ import { createHash } from 'node:crypto';
 
 export const EVIDENCE_SCHEMA = 'refactor.evidence/1';
 export const ERROR_SCHEMA = 'refactor.error/1';
+// The same text as "version" in package.json (a test checks it). The scripts cannot read
+// package.json: the skill folder is installed alone.
 export const TOOL_VERSION = '0.1.0';
 export const CONFIDENCE_LEVELS = Object.freeze(['observed', 'derived', 'inferred']);
 
@@ -30,7 +32,7 @@ export function codedError(code, message, details) {
  * default Array.prototype.sort) at every level, arrays in their
  * order, and no white space.
  * Throws TypeError for `undefined`, functions, symbols, bigints and numbers that are not finite
- * (also when they are inside an object or an array).
+ * (also when they are inside an object or an array), and for an array with holes.
  * Also throws TypeError for an object whose prototype is not Object.prototype or null.
  * @param {unknown} value
  * @returns {string}
@@ -53,7 +55,8 @@ export function canonicalJson(value) {
     throw new TypeError(`canonicalJson: ${type} is not allowed`);
   }
   if (Array.isArray(value)) {
-    return '[' + value.map((v) => canonicalJson(v)).join(',') + ']';
+    // Array.from reads a hole as undefined, which throws.
+    return '[' + Array.from(value, (v) => canonicalJson(v)).join(',') + ']';
   }
   if (type === 'object') {
     const proto = Object.getPrototypeOf(value);
@@ -70,6 +73,86 @@ export function canonicalJson(value) {
 }
 
 /**
+ * True when `value` is an object whose prototype is Object.prototype or null (not an array).
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isPlainObject(value) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * True when `value` is an array of strings without holes.
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isStringArray(value) {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  for (let i = 0; i < value.length; i++) {
+    // A hole reads as undefined, so it fails this check.
+    if (typeof value[i] !== 'string') {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Checks that `value` is JSON data and returns a deep copy of it, made in the same walk.
+ * JSON data: null, a boolean, a finite number, a string, an array without holes, or a plain
+ * object, with only JSON data inside and no cycle. Anything else throws TypeError whose
+ * message starts with `where`, the place of the bad value (for example "result.details.bits").
+ * The copy shares no object or array with `value`. A key such as "__proto__" stays a key.
+ * @param {unknown} value
+ * @param {string} where
+ * @param {Set<object>} [parents]  the arrays and objects that hold `value` (to find a cycle)
+ * @returns {unknown}
+ */
+function copyJsonData(value, where, parents = new Set()) {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new TypeError(`${where}: number is not finite`);
+    }
+    return value;
+  }
+  if (typeof value !== 'object') {
+    throw new TypeError(`${where}: ${typeof value} is not allowed`);
+  }
+  if (parents.has(value)) {
+    throw new TypeError(`${where}: a value must not hold itself`);
+  }
+  if (Array.isArray(value)) {
+    parents.add(value);
+    const copy = [];
+    for (let i = 0; i < value.length; i++) {
+      if (!Object.hasOwn(value, i)) {
+        throw new TypeError(`${where}[${i}]: an array must not have holes`);
+      }
+      copy.push(copyJsonData(value[i], `${where}[${i}]`, parents));
+    }
+    parents.delete(value);
+    return copy;
+  }
+  if (!isPlainObject(value)) {
+    throw new TypeError(`${where}: only plain objects are allowed`);
+  }
+  parents.add(value);
+  const copy = Object.fromEntries(Object.keys(value).map(
+    (key) => [key, copyJsonData(value[key], `${where}.${key}`, parents)]));
+  parents.delete(value);
+  return copy;
+}
+
+/**
  * Builds a frozen (deeply frozen) Evidence record and computes its `id`.
  * Validation (each failure throws TypeError whose message starts with the field name,
  * for example "subject.sha256: must be 64 lower-case hex characters"):
@@ -78,12 +161,14 @@ export function canonicalJson(value) {
  * - tool: object; tool.name non-empty string; tool.version non-empty string;
  *   tool.engine null or {name: non-empty string, version: string}. A missing engine becomes null.
  * - operation: non-empty string.
- * - parameters: plain object (default {}).
+ * - parameters: plain object of JSON data (default {}).
  * - confidence: one of CONFIDENCE_LEVELS.
- * - result: plain object.
+ * - result: plain object of JSON data. JSON data: see copyJsonData. The message for a bad
+ *   value names its place, for example "result.details.bits: undefined is not allowed".
+ *   The record holds copies of parameters and result.
  * - coverage: object; coverage.examined string; coverage.not_examined array of strings;
  *   coverage.truncated boolean (default false); coverage.next_cursor string or null (default null).
- * - limits: array of strings (default []).
+ * - limits: array of strings (default []). An array of strings must have no holes.
  * Key order of the returned object: schema, id, subject, tool, operation, parameters,
  * confidence, result, coverage, limits.
  * id = 'ev_' + first 32 hex characters of sha256(canonicalJson(record without id)).
@@ -100,13 +185,6 @@ export function makeEvidence({
   coverage = {},
   limits = [],
 } = {}) {
-  const isPlainObject = (obj) => {
-    if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
-      return false;
-    }
-    const proto = Object.getPrototypeOf(obj);
-    return proto === Object.prototype || proto === null;
-  };
   if (!isPlainObject(coverage)) {
     throw new TypeError('coverage: must be a plain object');
   }
@@ -168,6 +246,7 @@ export function makeEvidence({
   if (!isPlainObject(parameters)) {
     throw new TypeError('parameters: must be a plain object');
   }
+  const parametersCopy = copyJsonData(parameters, 'parameters');
 
   // confidence validation
   if (!CONFIDENCE_LEVELS.includes(confidence)) {
@@ -178,16 +257,14 @@ export function makeEvidence({
   if (!isPlainObject(result)) {
     throw new TypeError('result: must be a plain object');
   }
+  const resultCopy = copyJsonData(result, 'result');
 
-  // coverage validation
-  if (!isPlainObject(finalCoverage)) {
-    throw new TypeError('coverage: must be a plain object');
-  }
+  // coverage validation (the first check of this function refused a coverage that is not a
+  // plain object)
   if (typeof finalCoverage.examined !== 'string' || finalCoverage.examined === '') {
     throw new TypeError('coverage.examined: must be a non-empty string');
   }
-  if (!Array.isArray(finalCoverage.not_examined) ||
-    !finalCoverage.not_examined.every((i) => typeof i === 'string')) {
+  if (!isStringArray(finalCoverage.not_examined)) {
     throw new TypeError('coverage.not_examined: must be an array of strings');
   }
   if (typeof finalCoverage.truncated !== 'boolean') {
@@ -198,7 +275,7 @@ export function makeEvidence({
   }
 
   // limits validation
-  if (!Array.isArray(limits) || !limits.every((i) => typeof i === 'string')) {
+  if (!isStringArray(limits)) {
     throw new TypeError('limits: must be an array of strings');
   }
 
@@ -218,9 +295,9 @@ export function makeEvidence({
         : { name: finalTool.engine.name, version: finalTool.engine.version },
     },
     operation,
-    parameters: structuredClone(parameters),
+    parameters: parametersCopy,
     confidence,
-    result: structuredClone(result),
+    result: resultCopy,
     coverage: {
       examined: finalCoverage.examined,
       not_examined: [...finalCoverage.not_examined],

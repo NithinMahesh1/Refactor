@@ -2,6 +2,29 @@
 
 export const HEAD_BYTES = 4096;
 
+// Names of Mach-O CPU type numbers. The entries of a universal file use the same numbers.
+const MACHO_CPU_NAMES = new Map([
+  [7, 'x86'],
+  [0x01000007, 'x86-64'],
+  [12, 'arm'],
+  [0x0100000c, 'arm64'],
+]);
+
+// Control characters (U+0000 to U+001F, U+007F to U+009F).
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+
+// The character that takes the place of each control character: U+FFFD.
+const REPLACEMENT_CHAR = String.fromCharCode(0xfffd);
+
+/**
+ * The name of a Mach-O CPU type number, or `cpu-<n>` for a number without a name.
+ * @param {number} value
+ * @returns {string}
+ */
+function machoCpuName(value) {
+  return MACHO_CPU_NAMES.get(value) ?? `cpu-${value}`;
+}
+
 /**
  * Finds the file type from its first bytes.
  * Rules (first match wins, in this order): empty, elf, pe/mz, macho, macho-universal or
@@ -44,8 +67,8 @@ export function identifyBytes(head, fileSize) {
   // 2. elf
   const isElfMagic = b.length >= 4 &&
     b[0] === 0x7f && b[1] === 0x45 && b[2] === 0x4c && b[3] === 0x46;
-  const isElfPartial = (b.length === 2 || b.length === 3) &&
-    b[0] === 0x7f && b[1] === 0x45 && (b.length === 3 ? b[2] === 0x4c : true);
+  // A cut ELF start needs its first 3 magic bytes: 2 bytes prove nothing.
+  const isElfPartial = b.length === 3 && b[0] === 0x7f && b[1] === 0x45 && b[2] === 0x4c;
   if (isElfMagic || isElfPartial) {
     if (!isElfMagic) {
       return { type: 'elf', details: { incomplete: true } };
@@ -67,9 +90,11 @@ export function identifyBytes(head, fileSize) {
       }
     }
 
-    const useLittle = details.endian !== 'big';
+    // Without a known byte order, kind and machine cannot be read: they are left out.
+    const knownOrder = details.endian !== undefined;
+    const useLittle = details.endian === 'little';
 
-    const kindVal = u16(16, useLittle);
+    const kindVal = knownOrder ? u16(16, useLittle) : undefined;
     if (kindVal !== undefined) {
       if (kindVal === 1) {
         details.kind = 'relocatable';
@@ -84,7 +109,7 @@ export function identifyBytes(head, fileSize) {
       }
     }
 
-    const machineVal = u16(18, useLittle);
+    const machineVal = knownOrder ? u16(18, useLittle) : undefined;
     if (machineVal !== undefined) {
       if (machineVal === 3) {
         details.machine = 'x86';
@@ -200,17 +225,7 @@ export function identifyBytes(head, fileSize) {
 
     const cpuVal = u32(4, little);
     if (cpuVal !== undefined) {
-      if (cpuVal === 7) {
-        details.cpu = 'x86';
-      } else if (cpuVal === 0x01000007) {
-        details.cpu = 'x86-64';
-      } else if (cpuVal === 12) {
-        details.cpu = 'arm';
-      } else if (cpuVal === 0x0100000c) {
-        details.cpu = 'arm64';
-      } else {
-        details.cpu = `cpu-${cpuVal}`;
-      }
+      details.cpu = machoCpuName(cpuVal);
     }
 
     const filetypeVal = u32(12, little);
@@ -256,17 +271,7 @@ export function identifyBytes(head, fileSize) {
           incomplete = true;
           break;
         }
-        if (cpu === 7) {
-          details.architectures.push('x86');
-        } else if (cpu === 0x01000007) {
-          details.architectures.push('x86-64');
-        } else if (cpu === 12) {
-          details.architectures.push('arm');
-        } else if (cpu === 0x0100000c) {
-          details.architectures.push('arm64');
-        } else {
-          details.architectures.push(`cpu-${cpu}`);
-        }
+        details.architectures.push(machoCpuName(cpu));
       }
       if (incomplete) {
         details.incomplete = true;
@@ -318,7 +323,11 @@ export function identifyBytes(head, fileSize) {
     if (end === -1) {
       end = b.length;
     }
-    const interpreter = decoder.decode(b.subarray(2, end)).trim().slice(0, 100);
+    // Trim first (this removes the CR of a CRLF line end), then show each control character
+    // as U+FFFD. The cut at 100 characters never splits a character of 2 UTF-16 units.
+    const line = decoder.decode(b.subarray(2, end)).trim()
+      .replace(CONTROL_CHARS, REPLACEMENT_CHAR);
+    const interpreter = Array.from(line).slice(0, 100).join('');
     return { type: 'script', details: { interpreter } };
   }
 

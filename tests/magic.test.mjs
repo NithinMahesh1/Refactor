@@ -260,6 +260,113 @@ test('unknown (bad UTF-8)', () => {
   });
 });
 
+test('2 bytes of an ELF start are not an ELF file', () => {
+  for (const fileSize of [2, 64]) {
+    assert.deepEqual(identifyBytes(Buffer.from([0x7f, 0x45]), fileSize),
+      { type: 'text', details: {} });
+  }
+});
+
+test('ELF with an unknown byte order has no kind and no machine', () => {
+  const buf = Buffer.alloc(64);
+  buf.set([0x7f, 0x45, 0x4c, 0x46], 0);
+  buf[4] = 2;
+  buf[5] = 3;
+  buf.writeUInt16LE(2, 16);
+  buf.writeUInt16LE(62, 18);
+  assert.deepEqual(identifyBytes(buf, 64), { type: 'elf', details: { bits: 64 } });
+});
+
+test('script interpreter shows control characters as U+FFFD', () => {
+  const R = String.fromCharCode(0xfffd);
+  const buf = Buffer.from('#!/usr/bin/env\u0007 node\u001b[0m\u007f\u009b\r\n');
+  assert.deepEqual(identifyBytes(buf, buf.length), {
+    type: 'script',
+    details: { interpreter: '/usr/bin/env' + R + ' node' + R + '[0m' + R + R }
+  });
+});
+
+test('script interpreter cut never splits a character', () => {
+  const buf = Buffer.from('#!' + 'a'.repeat(99) + '\u{1f600}b\n');
+  assert.deepEqual(identifyBytes(buf, buf.length), {
+    type: 'script',
+    details: { interpreter: 'a'.repeat(99) + '\u{1f600}' }
+  });
+});
+
+test('cut MZ header', () => {
+  for (const len of [2, 0x3f]) {
+    const buf = Buffer.alloc(len);
+    buf.set([0x4d, 0x5a], 0);
+    assert.deepEqual(identifyBytes(buf, 1000), { type: 'mz', details: { incomplete: true } });
+  }
+});
+
+test('cut PE header', () => {
+  const buf = Buffer.alloc(512);
+  buf.set([0x4d, 0x5a], 0);
+  buf.writeUInt32LE(0x80, 0x3c);
+  buf.set([0x50, 0x45, 0x00, 0x00], 0x80);
+  buf.writeUInt16LE(0x8664, 0x84);
+  buf.writeUInt16LE(0x2022, 0x96);
+  buf.writeUInt16LE(0x20b, 0x98);
+  assert.deepEqual(identifyBytes(buf.subarray(0, 0x84), 512),
+    { type: 'pe', details: { incomplete: true } });
+  assert.deepEqual(identifyBytes(buf.subarray(0, 0x86), 512),
+    { type: 'pe', details: { machine: 'x86-64', incomplete: true } });
+  assert.deepEqual(identifyBytes(buf.subarray(0, 0x98), 512),
+    { type: 'pe', details: { machine: 'x86-64', dll: true, incomplete: true } });
+  assert.deepEqual(identifyBytes(buf.subarray(0, 0x82), 512),
+    { type: 'mz', details: { pe_header: 'outside the bytes read' } });
+});
+
+test('cut Mach-O header', () => {
+  const buf = Buffer.alloc(32);
+  buf.set([0xcf, 0xfa, 0xed, 0xfe], 0);
+  buf.writeUInt32LE(0x0100000c, 4);
+  buf.writeUInt32LE(6, 12);
+  assert.deepEqual(identifyBytes(buf.subarray(0, 4), 32),
+    { type: 'macho', details: { bits: 64, endian: 'little', incomplete: true } });
+  assert.deepEqual(identifyBytes(buf.subarray(0, 8), 32), {
+    type: 'macho',
+    details: { bits: 64, endian: 'little', cpu: 'arm64', incomplete: true }
+  });
+});
+
+test('cut universal header', () => {
+  const buf = Buffer.alloc(48);
+  buf.set([0xca, 0xfe, 0xba, 0xbe], 0);
+  buf.writeUInt32BE(2, 4);
+  buf.writeUInt32BE(0x01000007, 8);
+  buf.writeUInt32BE(0x0100000c, 28);
+  assert.deepEqual(identifyBytes(buf.subarray(0, 28), 48), {
+    type: 'macho-universal',
+    details: { architectures: ['x86-64'], incomplete: true }
+  });
+  assert.deepEqual(identifyBytes(buf.subarray(0, 6), 48),
+    { type: 'unknown', details: { incomplete: true } });
+});
+
+test('Mach-O CPU names are the same in both formats', () => {
+  const cpus = [7, 0x01000007, 12, 0x0100000c, 99];
+  const names = ['x86', 'x86-64', 'arm', 'arm64', 'cpu-99'];
+  const fat = Buffer.alloc(8 + cpus.length * 20);
+  fat.set([0xca, 0xfe, 0xba, 0xbe], 0);
+  fat.writeUInt32BE(cpus.length, 4);
+  cpus.forEach((cpu, i) => {
+    fat.writeUInt32BE(cpu, 8 + i * 20);
+  });
+  assert.deepEqual(identifyBytes(fat, fat.length),
+    { type: 'macho-universal', details: { architectures: names } });
+  cpus.forEach((cpu, i) => {
+    const thin = Buffer.alloc(28);
+    thin.set([0xfe, 0xed, 0xfa, 0xce], 0);
+    thin.writeUInt32BE(cpu, 4);
+    thin.writeUInt32BE(2, 12);
+    assert.strictEqual(identifyBytes(thin, 28).details.cpu, names[i]);
+  });
+});
+
 test('A cut header never throws', () => {
   const buf = Buffer.alloc(512);
   buf.set([0x4d, 0x5a], 0);

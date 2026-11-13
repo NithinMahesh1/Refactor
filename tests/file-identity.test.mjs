@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,17 +9,22 @@ import crypto from 'node:crypto';
 import { main } from '../skills/rea/scripts/file-identity.mjs';
 
 const SCRIPT = fileURLToPath(new URL('../skills/rea/scripts/file-identity.mjs', import.meta.url));
+const PACKAGE = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+const BS = '\\';
+const UNSAFE_MESSAGE =
+  'network and device paths are not allowed; copy the file to a local folder';
 
 /**
- * Runs the script as a child process.
+ * Runs the script as a child process. A run that takes longer than 60 seconds is stopped (its
+ * status is then null).
  * @param {string[]} args Arguments to pass to the script.
  * @returns {{status: number, stdout: string, stderr: string}}
  */
 function runScript(args) {
-  return spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' });
+  return spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', timeout: 60000 });
 }
 
-test('text file', async (t) => {
+test('text file', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
   try {
     const filePath = path.join(dir, 'sample.txt');
@@ -39,6 +44,10 @@ test('text file', async (t) => {
     assert.strictEqual(out.result.type, 'text');
     assert.strictEqual(out.result.size_bytes, content.length);
     assert.strictEqual(out.tool.name, 'file-identity');
+    assert.strictEqual(out.tool.version, PACKAGE.version);
+    // One line of JSON, then one line end.
+    assert.strictEqual(r.stdout.endsWith('}\n'), true);
+    assert.strictEqual(r.stdout.split('\n').length, 2);
     assert.strictEqual(out.operation, 'identify');
     assert.strictEqual(out.confidence, 'observed');
     assert.strictEqual(out.tool.engine, null);
@@ -56,7 +65,7 @@ test('text file', async (t) => {
   }
 });
 
-test('elf file', async (t) => {
+test('elf file', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
   try {
     const filePath = path.join(dir, 'prog.bin');
@@ -88,7 +97,7 @@ test('elf file', async (t) => {
   }
 });
 
-test('no folder path by default', async (t) => {
+test('no folder path by default', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
   try {
     const filePath = path.join(dir, 'sample.txt');
@@ -99,14 +108,14 @@ test('no folder path by default', async (t) => {
 
     const out = JSON.parse(r.stdout);
     assert.strictEqual('path' in out.subject, false);
-    assert.strictEqual(r.stdout.includes(dir), false);
-    assert.strictEqual(r.stdout.includes(dir.replaceAll('\\', '\\\\')), false);
+    // The folder name finds the path with every kind of separator.
+    assert.strictEqual(r.stdout.includes(path.basename(dir)), false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('--show-path adds the path', async (t) => {
+test('--show-path adds the path', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
   try {
     const filePath = path.join(dir, 'sample.txt');
@@ -122,7 +131,7 @@ test('--show-path adds the path', async (t) => {
   }
 });
 
-test('not_found', async (t) => {
+test('not_found', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
   try {
     const filePath = path.join(dir, 'non-existent.txt');
@@ -139,7 +148,7 @@ test('not_found', async (t) => {
   }
 });
 
-test('is_directory', async (t) => {
+test('is_directory', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
   try {
     const r = runScript([dir]);
@@ -152,7 +161,7 @@ test('is_directory', async (t) => {
   }
 });
 
-test('usage', async (t) => {
+test('usage', () => {
   // no argument
   const r1 = runScript([]);
   assert.strictEqual(r1.status, 2);
@@ -170,9 +179,16 @@ test('usage', async (t) => {
   assert.strictEqual(r3.status, 2);
   const out3 = JSON.parse(r3.stdout);
   assert.strictEqual(out3.error.code, 'usage');
+
+  // an empty path
+  const r4 = runScript(['']);
+  assert.strictEqual(r4.status, 2);
+  assert.strictEqual(r4.stderr, '');
+  assert.deepStrictEqual(JSON.parse(r4.stdout).error,
+    { code: 'usage', message: 'the file path is empty' });
 });
 
-test('--pretty prints more than one line', async (t) => {
+test('--pretty prints more than one line', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
   try {
     const filePath = path.join(dir, 'sample.txt');
@@ -190,12 +206,17 @@ test('--pretty prints more than one line', async (t) => {
   }
 });
 
-test('large file hashing', async (t) => {
+test('large file hashing', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
   try {
     const filePath = path.join(dir, 'big.bin');
     const size = 5 * 1024 * 1024;
-    const buffer = Buffer.alloc(size, 0x61);
+    // Letters in a counting pattern: the file is text, and the order of the read chunks
+    // matters for the digest.
+    const buffer = Buffer.alloc(size);
+    for (let i = 0; i < size; i++) {
+      buffer[i] = 0x61 + (i % 26);
+    }
     fs.writeFileSync(filePath, buffer);
 
     const r = runScript([filePath]);
@@ -212,7 +233,7 @@ test('large file hashing', async (t) => {
   }
 });
 
-test('empty file', async (t) => {
+test('empty file', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
   try {
     const filePath = path.join(dir, 'empty.txt');
@@ -230,7 +251,7 @@ test('empty file', async (t) => {
   }
 });
 
-test('--help', async (t) => {
+test('--help', () => {
   const r = runScript(['--help']);
   assert.strictEqual(r.status, 0);
   assert.ok(r.stdout.startsWith('Use: node file-identity.mjs'));
@@ -256,15 +277,151 @@ test('id is stable', () => {
   }
 });
 
-test('unreadable', () => {
-  // The null device is there on every system and is not a regular file.
+test('unreadable', async () => {
+  // No system accepts a zero byte in a file path. A command line cannot hold one, so this
+  // case calls main() directly.
+  const { exitCode, output } = await main(['sample' + String.fromCharCode(0) + '.bin']);
+  assert.strictEqual(exitCode, 2);
+  assert.deepStrictEqual(JSON.parse(output), {
+    schema: 'refactor.error/1',
+    error: { code: 'unreadable', message: 'the file cannot be read' },
+  });
+});
+
+test('the null device is refused', () => {
+  // On Windows the null device has the device path \\.\nul. On other systems it is a
+  // character device, not a regular file.
   const r = runScript([os.devNull]);
   assert.strictEqual(r.status, 2);
   assert.strictEqual(r.stderr, '');
 
   const out = JSON.parse(r.stdout);
   assert.strictEqual(out.schema, 'refactor.error/1');
-  assert.strictEqual(out.error.code, 'unreadable');
+  assert.strictEqual(out.error.code, process.platform === 'win32' ? 'unsafe_path' : 'unreadable');
+});
+
+test('a network or device path gives unsafe_path', () => {
+  const targets = [BS + BS + 'host' + BS + 'share' + BS + 'sample.bin', '//host/share/sample.bin'];
+  for (const target of targets) {
+    const r = runScript([target]);
+    assert.strictEqual(r.status, 2);
+    assert.strictEqual(r.stderr, '');
+    assert.deepStrictEqual(JSON.parse(r.stdout).error,
+      { code: 'unsafe_path', message: UNSAFE_MESSAGE });
+  }
+});
+
+test('--pretty also prints an error record on more than one line', () => {
+  // A usage error after the options were read, and one while they were read.
+  for (const args of [['--pretty'], ['--nope', '--pretty']]) {
+    const r = runScript(args);
+    assert.strictEqual(r.status, 2);
+    assert.ok(r.stdout.trim().split('\n').length > 1);
+    assert.strictEqual(JSON.parse(r.stdout).error.code, 'usage');
+  }
+  // After a lone -- the word --pretty is a path, not an option.
+  const r = runScript(['--nope', '--', '--pretty']);
+  assert.strictEqual(r.status, 2);
+  assert.strictEqual(r.stdout.trim().split('\n').length, 1);
+  assert.strictEqual(JSON.parse(r.stdout).error.code, 'usage');
+});
+
+test('the type comes from exactly the first 4096 bytes', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
+  try {
+    // An MZ file names the place of its PE signature at offset 0x3c. The signature has
+    // 4 bytes. At offset 4092 its last byte is byte 4096 of the file: inside the first bytes.
+    // At offset 4093 one byte is outside the first bytes, but inside the file.
+    const cases = [
+      [4092, { type: 'pe', details: { incomplete: true } }],
+      [4093, { type: 'mz', details: { pe_header: 'outside the bytes read' } }],
+    ];
+    for (const [offset, expected] of cases) {
+      const buffer = Buffer.alloc(8192);
+      buffer.write('MZ', 0, 'latin1');
+      buffer.writeUInt32LE(offset, 0x3c);
+      buffer.write('PE', offset, 'latin1');
+      const filePath = path.join(dir, 'head-' + offset + '.bin');
+      fs.writeFileSync(filePath, buffer);
+
+      const r = runScript([filePath]);
+      assert.strictEqual(r.status, 0);
+      const out = JSON.parse(r.stdout);
+      assert.deepStrictEqual({ type: out.result.type, details: out.result.details }, expected);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a text file whose first 4096 bytes end inside a character is text', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
+  try {
+    // Byte 4096 is the first of the 2 bytes of the letter e with an acute accent. The type
+    // check must know that the file goes on after the bytes that it got.
+    const filePath = path.join(dir, 'letters.txt');
+    fs.writeFileSync(filePath,
+      Buffer.concat([Buffer.alloc(4095, 0x61), Buffer.from([0xc3, 0xa9, 0x62])]));
+
+    const r = runScript([filePath]);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(JSON.parse(r.stdout).result.type, 'text');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a reader that closes stdout early gets no stack trace on stderr', { timeout: 60000 },
+  async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
+    try {
+      const filePath = path.join(dir, 'sample.txt');
+      fs.writeFileSync(filePath, 'hello, world\n');
+      const child = spawn(process.execPath, [SCRIPT, filePath],
+        { stdio: ['ignore', 'pipe', 'pipe'] });
+      // Close the reading end at once: the script then writes into a closed pipe.
+      child.stdout.destroy();
+      let stderr = '';
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (text) => {
+        stderr += text;
+      });
+      const exitCode = await new Promise((resolve) => {
+        child.on('close', (code) => {
+          resolve(code);
+        });
+      });
+      assert.strictEqual(stderr, '');
+      assert.strictEqual(exitCode, 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+test('main() answers only after the file is closed', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
+  const realClose = fs.close;
+  try {
+    const filePath = path.join(dir, 'sample.txt');
+    fs.writeFileSync(filePath, 'hello, world\n');
+    // The read stream closes the file with fs.close: count the calls that started and ended.
+    let started = 0;
+    let ended = 0;
+    fs.close = (fd, callback) => {
+      started += 1;
+      realClose(fd, (err) => {
+        ended += 1;
+        callback(err);
+      });
+    };
+    const { exitCode } = await main([filePath]);
+    assert.strictEqual(exitCode, 0);
+    assert.strictEqual(started, 1);
+    assert.strictEqual(ended, 1);
+  } finally {
+    fs.close = realClose;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('an error prints no folder path on stdout or stderr', () => {
@@ -282,7 +439,7 @@ test('an error prints no folder path on stdout or stderr', () => {
   }
 });
 
-test('a file that changes after its size was read gives no wrong record', async (t) => {
+test('a file that changes after its size was read gives no wrong record', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
   try {
     const filePath = path.join(dir, 'growing.bin');
