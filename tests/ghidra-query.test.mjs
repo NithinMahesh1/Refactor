@@ -109,7 +109,7 @@ test('scrubTail replaces the home folder in each form, case ignored', () => {
     scrubTail('at C:\\Users\\you\\p and C:/Users/you/q', { home: 'C:\\Users\\you' }),
     'at ~\\p and ~/q'
   );
-  assert.equal(scrubTail('C:\\USERS\\YOU\\p', { home: 'C:\\Users\\you' }), '~\\p');
+  assert.equal(scrubTail('C:\\USERS' + '\\YOU\\p', { home: 'C:\\Users\\you' }), '~\\p');
 });
 
 test('scrubTail replaces user and host names only as whole words', () => {
