@@ -164,8 +164,9 @@ test('canonicalJson refuses objects that are not plain', () => {
 test('makeEvidence refuses values that are not plain data', () => {
   assert.throws(() => makeEvidence({ ...validInput(), result: new Date(0) }),
     (e) => e instanceof TypeError && e.message.startsWith('result'));
-  assert.throws(() => makeEvidence({ ...validInput(), coverage: [] }),
-    (e) => e instanceof TypeError && e.message.startsWith('coverage'));
+  const coverageArray = Object.assign([], validInput().coverage);
+  assert.throws(() => makeEvidence({ ...validInput(), coverage: coverageArray }),
+    { name: 'TypeError', message: 'coverage: must be a plain object' });
 });
 
 test('tool.engine keeps only name and version', () => {

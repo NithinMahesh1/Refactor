@@ -34,7 +34,8 @@ test('A sleeping child is stopped at the timeout', async () => {
 test('A child that starts its own child is stopped as a tree', { timeout: 20000 }, async () => {
   const script = [
     'const { spawn } = require("node:child_process");',
-    'spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "inherit" });',
+    'spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"],',
+    '{ stdio: "inherit", windowsHide: true, detached: process.platform === "win32" });',
     'setTimeout(() => {}, 60000);',
   ].join(' ');
   const r = await runProcess(process.execPath, ['-e', script], { timeoutMs: 500 });
@@ -112,6 +113,12 @@ test('Bad options reject with code usage', async () => {
     runProcess(process.execPath, ['-e', ''], { maxOutputBytes: 1.5 }),
     { code: 'usage' }
   );
+  await assert.rejects(
+    runProcess(process.execPath, ['-e', ''], { timeoutMs: 2147483648 }),
+    { code: 'usage' }
+  );
+  const atLimit = await runProcess(process.execPath, ['-e', ''], { timeoutMs: 2147483647 });
+  assert.strictEqual(atLimit.exitCode, 0);
 });
 
 test('The spawn_failed message holds no path', async () => {
@@ -119,6 +126,41 @@ test('The spawn_failed message holds no path', async () => {
   await assert.rejects(runProcess(missing, []), (e) =>
     e.code === 'spawn_failed' && !e.message.includes('refactor-missing-folder')
   );
+  const withZeroByte = ['-e', '', 'refactor-secret-text' + String.fromCharCode(0) + 'tail'];
+  await assert.rejects(runProcess(process.execPath, withZeroByte), (e) =>
+    e.code === 'spawn_failed' && !e.message.includes('refactor-secret-text')
+  );
+});
+
+test('The time limit starts taskkill by its full path and has a fallback', {
+  skip: process.platform !== 'win32',
+  timeout: 30000,
+}, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refactor-test-'));
+  const savedRoot = process.env.SystemRoot;
+  try {
+    const pending = runProcess(process.execPath, ['-e', 'setTimeout(() => {}, 12000)'],
+      { timeoutMs: 500 });
+    // From here on <SystemRoot>/System32/taskkill.exe does not exist.
+    process.env.SystemRoot = dir;
+    const r = await pending;
+    assert.strictEqual(r.timedOut, true);
+    assert.strictEqual(r.signal, 'SIGTERM');
+    assert.ok(r.durationMs < 10000);
+  } finally {
+    process.env.SystemRoot = savedRoot;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('The child gets NoDefaultCurrentDirectoryInExePath when the caller passes env', {
+  skip: process.platform !== 'win32',
+}, async () => {
+  const env = Object.freeze({ SystemRoot: process.env.SystemRoot, PATH: process.env.PATH });
+  const script = 'process.stdout.write(String(process.env.NoDefaultCurrentDirectoryInExePath))';
+  const r = await runProcess(process.execPath, ['-e', script], { env });
+  assert.strictEqual(r.stdout, '1');
+  assert.deepStrictEqual(Object.keys(env), ['SystemRoot', 'PATH']);
 });
 
 test('A program in the current folder is not started by its bare name on Windows', {
