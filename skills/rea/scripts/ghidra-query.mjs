@@ -768,6 +768,27 @@ function buildRecord({ command, target, sha256, showPath, query, file, analysisT
 }
 
 /**
+ * Removes a temporary folder of this script. A failure never changes the answer of the
+ * query: on Windows a folder cannot be removed while a process uses it as its current
+ * folder, and runProcess can end its wait while a process of the engine still runs. One
+ * more try follows when the script ends; after that the folder stays where it is.
+ * @param {string} dir
+ */
+function removeFolder(dir) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    process.once('exit', () => {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // still in use
+      }
+    });
+  }
+}
+
+/**
  * Runs functions, strings or decompile and returns the Evidence record. Steps:
  * 1. query = parseQueryOptions(command, options). Then each of query.filter, query.name and
  *    query.address that is a string longer than 500 characters gives codedError('usage',
@@ -788,7 +809,7 @@ function buildRecord({ command, target, sha256, showPath, query, file, analysisT
  *    cursor, filter, name, address, max_chars: maxChars }) (values from query). The filter,
  *    the name and the address reach the engine ONLY through this file.
  * 6. In try, with finally (always remove queryDir; with options['no-cache'] also remove
- *    projectDir; fs.rmSync with recursive and force):
+ *    projectDir; with removeFolder, so a folder that is still in use changes no answer):
  *    a. args = buildEngineArgs({ mode, projectDir, targetPath: target.absPath,
  *       targetName: mode === 'process' ? marker.program_name : target.name,
  *       scriptDir: SCRIPT_DIR, queryFile, timeoutSec: query.timeoutSec }).
@@ -915,9 +936,9 @@ async function runQuery(command, targetArg, options, ghidraDir, env) {
       analysisTimedOut: output.includes('Analysis timed out'),
     });
   } finally {
-    fs.rmSync(queryDir, { recursive: true, force: true });
+    removeFolder(queryDir);
     if (options['no-cache']) {
-      fs.rmSync(projectDir, { recursive: true, force: true });
+      removeFolder(projectDir);
     }
   }
 }

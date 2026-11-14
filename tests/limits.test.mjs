@@ -82,6 +82,21 @@ test('capText over the limit', () => {
   assert.deepEqual(capText('abcdefg', 5), { text: 'abcde', truncated: true, omitted_chars: 2 });
 });
 
+test('capText never splits a surrogate pair', () => {
+  const face = '\u{1F600}';
+  assert.deepEqual(capText('ab' + face + 'c', 3),
+    { text: 'ab', truncated: true, omitted_chars: 3 });
+  assert.deepEqual(capText('ab' + face + 'c', 4),
+    { text: 'ab' + face, truncated: true, omitted_chars: 1 });
+  assert.deepEqual(capText(face, 1), { text: '', truncated: true, omitted_chars: 2 });
+  assert.deepEqual(capText('abc', 0), { text: '', truncated: true, omitted_chars: 3 });
+});
+
+test('capText and page refuse a wrong type', () => {
+  assert.throws(() => capText(42, 5), { name: 'TypeError', message: 'text must be a string' });
+  assert.throws(() => page('abcdef'), { name: 'TypeError', message: 'items must be an array' });
+  assert.throws(() => page({ length: 3 }), { name: 'TypeError' });
+});
 test('capText bad maxChars', () => {
   assert.throws(() => capText('abc', -1), { code: 'bad_limit' });
   assert.throws(() => capText('abc', 1.5), { code: 'bad_limit' });

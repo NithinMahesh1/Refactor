@@ -424,6 +424,66 @@ test('the Windows launcher runs through cmd.exe', { skip: notWindows }, async ()
   }
 });
 
+test('a process that still uses the query folder does not change the answer', {
+  skip: notWindows,
+  timeout: 60000,
+}, async () => {
+  const s = setup();
+  const pidFile = path.join(s.tmp, 'left.pid');
+  try {
+    // A stand-in engine: it writes a good result file, starts a process that keeps the output
+    // pipes and the query folder (its current folder) for 60 s, and ends with exit code 0.
+    // So runProcess ends its wait while that process still runs.
+    const engine = path.join(s.tmp, 'engine.cjs');
+    fs.writeFileSync(engine, [
+      'const { spawn } = require("node:child_process");',
+      'const fs = require("node:fs");',
+      'const args = process.argv.slice(2);',
+      'const queryFile = args[args.indexOf("-postScript") + 2];',
+      'const query = JSON.parse(fs.readFileSync(queryFile, "utf8"));',
+      'fs.writeFileSync(query.out, JSON.stringify({ ok: true, op: query.op, program: null,',
+      '  ghidra_version: "11.0-test", result: { items: [], total: 0, next_cursor: null } }));',
+      'const left = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"],',
+      '  { stdio: "inherit", detached: true, windowsHide: true });',
+      'left.unref();',
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(left.pid));`,
+      'setTimeout(() => process.exit(0), 200);',
+      '',
+    ].join('\n'));
+    // The temporary folder of the script is inside s.tmp, so the cleanup removes what stays.
+    const temp = path.join(s.tmp, 'temp');
+    fs.mkdirSync(temp);
+    const env = { ...s.env, TEMP: temp, TMP: temp,
+      REFACTOR_ENGINE_COMMAND: JSON.stringify([process.execPath, engine]) };
+    const r = await run(['functions', s.target, '--no-cache'], env);
+    assert.equal(r.status, 0, r.stdout);
+    assert.equal(r.json.schema, 'refactor.evidence/1');
+    assert.equal(r.json.operation, 'functions');
+  } finally {
+    // Stop the process that the stand-in left behind. Windows frees the folder of a process
+    // a moment after its end, so the removal is tried for 5 s at most.
+    const left = fs.existsSync(pidFile) ? Number(fs.readFileSync(pidFile, 'utf8')) : 0;
+    if (left > 0) {
+      try {
+        process.kill(left);
+      } catch {
+        // already gone
+      }
+    }
+    for (let i = 0; i < 50; i++) {
+      try {
+        s.cleanup();
+        break;
+      } catch (err) {
+        if (i === 49) {
+          throw err;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+  }
+});
+
 test('a page that is not the last one sets next_cursor', async () => {
   const s = await setup();
   try {

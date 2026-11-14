@@ -31,15 +31,39 @@ test('A sleeping child is stopped at the timeout', async () => {
   assert.ok(r.durationMs < 15000);
 });
 
-test('A child that starts its own child is stopped as a tree', { timeout: 20000 }, async () => {
+test('A child that starts its own child is stopped as a tree', { timeout: 30000 }, async () => {
+  // The child prints the process number of its own child. That process is detached on
+  // Windows, so only a stop of the whole tree ends it. The time limit is long, because the
+  // child must print the number before the limit, also when the machine is busy.
   const script = [
     'const { spawn } = require("node:child_process");',
-    'spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"],',
+    'const g = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"],',
     '{ stdio: "inherit", windowsHide: true, detached: process.platform === "win32" });',
+    'process.stdout.write(String(g.pid));',
     'setTimeout(() => {}, 60000);',
   ].join(' ');
-  const r = await runProcess(process.execPath, ['-e', script], { timeoutMs: 500 });
+  const r = await runProcess(process.execPath, ['-e', script], { timeoutMs: 5000 });
+  const grandchild = /^[0-9]+$/.test(r.stdout) ? Number(r.stdout) : 0;
+  const runs = () => {
+    try {
+      process.kill(grandchild, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // The stop of the tree can need some seconds on a busy machine.
+  let stillRuns = grandchild > 0 && runs();
+  for (let i = 0; i < 200 && stillRuns; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stillRuns = runs();
+  }
+  if (stillRuns) {
+    process.kill(grandchild);
+  }
   assert.strictEqual(r.timedOut, true);
+  assert.ok(grandchild > 0, 'the child did not print the process number of its child');
+  assert.strictEqual(stillRuns, false, 'the grandchild still runs after the time limit');
   assert.ok(r.durationMs < 15000);
 });
 
@@ -132,7 +156,7 @@ test('The spawn_failed message holds no path', async () => {
   );
 });
 
-test('The time limit starts taskkill by its full path and has a fallback', {
+test('A taskkill that cannot start is followed by child.kill()', {
   skip: process.platform !== 'win32',
   timeout: 30000,
 }, async () => {

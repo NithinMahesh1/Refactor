@@ -11,7 +11,8 @@ import { codedError } from './evidence.mjs';
  * - Anything that does not start with `--` is a positional argument. A lone `--` ends the
  *   options; all later arguments are positional.
  * - An unknown option, a value option without a value, or a repeated option throws
- *   codedError('usage', message).
+ *   codedError('usage', message). A value option followed by an argument that starts with
+ *   `--` has no value (`--limit --pretty` throws); `--name=--text` passes such a value.
  * Option names keep their dashes: result.options['show-path'] === true.
  * @param {string[]} argv
  * @param {{flags?: string[], values?: string[]}} spec
@@ -65,7 +66,7 @@ export function parseArgs(argv, spec) {
           options[name] = value;
         } else {
           i++;
-          if (i >= argv.length) {
+          if (i >= argv.length || argv[i].startsWith('--')) {
             throw codedError('usage', `option --${name} needs a value`);
           }
           options[name] = argv[i];

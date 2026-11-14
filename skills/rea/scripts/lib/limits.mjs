@@ -59,11 +59,15 @@ export function parseCursor(cursor) {
  * Returns one page of `items`.
  * next_cursor is String(offset + items returned) when more items follow, else null.
  * truncated is true when more items follow.
+ * Throws TypeError('items must be an array') when items is not an array.
  * @param {unknown[]} items
  * @param {{limit?: number | string, cursor?: string}} [options]
  * @returns {{items: unknown[], total: number, truncated: boolean, next_cursor: string | null}}
  */
 export function page(items, { limit, cursor } = {}) {
+  if (!Array.isArray(items)) {
+    throw new TypeError('items must be an array');
+  }
   const n = parseLimit(limit);
   const offset = parseCursor(cursor);
   const slice = items.slice(offset, offset + n);
@@ -79,22 +83,34 @@ export function page(items, { limit, cursor } = {}) {
 
 /**
  * Cuts text to at most `maxChars` characters (UTF-16 code units).
- * Returns { text, truncated, omitted_chars }; omitted_chars is 0 when not cut.
- * Throws codedError('bad_limit', ...) when maxChars is not an integer >= 0.
+ * A cut never splits a surrogate pair: then the kept text ends one unit earlier.
+ * Returns { text, truncated, omitted_chars }; omitted_chars is the number of UTF-16 code
+ * units left out, 0 when not cut.
+ * Throws codedError('bad_limit', ...) when maxChars is not an integer >= 0, and
+ * TypeError('text must be a string') when text is not a string.
  * @param {string} text
  * @param {number} maxChars
  * @returns {{text: string, truncated: boolean, omitted_chars: number}}
  */
 export function capText(text, maxChars) {
+  if (typeof text !== 'string') {
+    throw new TypeError('text must be a string');
+  }
   if (!Number.isInteger(maxChars) || maxChars < 0) {
     throw codedError('bad_limit', 'maxChars must be a whole number of 0 or more');
   }
   if (text.length <= maxChars) {
     return { text, truncated: false, omitted_chars: 0 };
   }
+  let end = maxChars;
+  const last = text.charCodeAt(end - 1);
+  const next = text.charCodeAt(end);
+  if (end > 0 && last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+    end -= 1;
+  }
   return {
-    text: text.slice(0, maxChars),
+    text: text.slice(0, end),
     truncated: true,
-    omitted_chars: text.length - maxChars,
+    omitted_chars: text.length - end,
   };
 }

@@ -89,6 +89,13 @@ test('A value that ends with a backslash is refused', () => {
     ['/d', '/s', '/c', '""run.bat" "C:\\dir\\file.bin""']);
 });
 
+test('A value option does not take a following option as its value', () => {
+  assert.throws(() => parseArgs(['--filter', '--pretty'], spec),
+    { code: 'usage', message: 'option --filter needs a value' });
+  assert.throws(() => parseArgs(['--limit', '--'], spec), { code: 'usage' });
+  assert.deepEqual(parseArgs(['--filter=--pretty'], spec).options, { filter: '--pretty' });
+  assert.deepEqual(parseArgs(['--limit', '-1'], spec).options, { limit: '-1' });
+});
 test('The unsafe-path message tells the user what to do', () => {
   assert.throws(() => buildWindowsBatCommand('run.bat', ['a&b']),
     (e) => e.message.includes('copy the file to a path without') && !e.message.includes('a&b'));
